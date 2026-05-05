@@ -21,12 +21,18 @@ def step(label: str) -> None:
 def main() -> int:
     print("Day 19 lite smoke test")
     try:
-        # ── 1. fastembed ────────────────────────────────────────────────
-        step("fastembed loads + embeds (BAAI/bge-small-en-v1.5)")
-        from fastembed import TextEmbedding
-        emb_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-        sample = list(emb_model.embed(["cloud computing tiếng Việt"]))
-        assert len(sample) == 1 and len(sample[0]) == 384, f"unexpected vector shape: {len(sample[0])}"
+        # ── 1. OpenAI ────────────────────────────────────────────────
+        step("OpenAI loads + embeds (text-embedding-3-small)")
+        import openai
+        import os
+        from dotenv import load_dotenv
+        load_dotenv()
+        assert os.getenv("OPENAI_API_KEY") and os.getenv("OPENAI_API_KEY") != "your-openai-api-key-here", "OPENAI_API_KEY is not set correctly in .env"
+        emb_model = "text-embedding-3-small"
+        client_oai = openai.OpenAI()
+        response = client_oai.embeddings.create(input=["cloud computing tiếng Việt"], model=emb_model)
+        sample = [response.data[0].embedding]
+        assert len(sample) == 1 and len(sample[0]) == 1536, f"unexpected vector shape: {len(sample[0])}"
 
         # ── 2. Qdrant in-memory ─────────────────────────────────────────
         step("Qdrant in-memory: index + search")
@@ -35,13 +41,13 @@ def main() -> int:
         client = QdrantClient(":memory:")
         client.create_collection(
             collection_name="smoke",
-            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+            vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
         )
         client.upsert(
             collection_name="smoke",
-            points=[PointStruct(id=i, vector=sample[0].tolist(), payload={"i": i}) for i in range(3)],
+            points=[PointStruct(id=i, vector=sample[0], payload={"i": i}) for i in range(3)],
         )
-        hits = client.query_points(collection_name="smoke", query=sample[0].tolist(), limit=2).points
+        hits = client.query_points(collection_name="smoke", query=sample[0], limit=2).points
         assert len(hits) == 2, f"expected 2 hits, got {len(hits)}"
 
         # ── 3. rank-bm25 ────────────────────────────────────────────────

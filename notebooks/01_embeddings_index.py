@@ -18,7 +18,7 @@ import _setup  # noqa: F401  -- adds repo root to sys.path
 import json
 from pathlib import Path
 
-from fastembed import TextEmbedding
+import openai
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 
@@ -42,19 +42,21 @@ print(f"First doc:")
 print(json.dumps(docs[0], ensure_ascii=False, indent=2))
 
 # %% [markdown]
-# ## 2. Embedding model: `BAAI/bge-small-en-v1.5`
+# ## 2. Embedding model: `text-embedding-3-small`
 #
 # `fastembed` chạy ONNX → CPU friendly, không cần GPU. 384-dim vectors.
 #
 # > Trong production tiếng Việt 2026, bạn nên dùng `bge-m3` hoặc
 # > `text-embedding-3-large` (xem deck §1, bảng *Embedding Models 2026*).
-# > Cho lab này dùng `bge-small-en` để mọi laptop chạy được nhanh.
+# > Cho lab này dùng `text-embedding-3-small` qua OpenAI API.
 
 # %%
-embedder = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-sample = list(embedder.embed(["cloud computing tiếng Việt"]))[0]
+EMBED_MODEL = "text-embedding-3-small"
+openai_client = openai.OpenAI()
+response = openai_client.embeddings.create(input=["cloud computing tiếng Việt"], model=EMBED_MODEL)
+sample = response.data[0].embedding
 print(f"Vector dim: {len(sample)}")
-print(f"First 8 values: {sample[:8].tolist()}")
+print(f"First 8 values: {sample[:8]}")
 
 # %% [markdown]
 # ## 3. Index vào Qdrant (in-memory mode)
@@ -67,7 +69,7 @@ print(f"First 8 values: {sample[:8].tolist()}")
 client = QdrantClient(":memory:")
 client.create_collection(
     collection_name="lab19",
-    vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+    vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
 )
 
 # %% [markdown]
@@ -88,11 +90,12 @@ points: list[PointStruct] = []
 for start in range(0, len(docs), BATCH):
     batch = docs[start:start + BATCH]
     texts = [d["title"] + " " + d["text"] for d in batch]
-    vectors = list(embedder.embed(texts))
+    response = openai_client.embeddings.create(input=texts, model=EMBED_MODEL)
+    vectors = [data.embedding for data in response.data]
     for i, (d, v) in enumerate(zip(batch, vectors)):
         points.append(PointStruct(
             id=start + i,
-            vector=v.tolist(),
+            vector=v,
             payload={"doc_id": d["doc_id"], "topic": d["topic"], "title": d["title"]},
         ))
 
@@ -110,7 +113,7 @@ assert n_indexed == 1000, f"expected 1000 indexed, got {n_indexed}"
 
 # %%
 query = "cloud computing và tự động mở rộng"
-q_vec = next(embedder.embed([query])).tolist()
+q_vec = openai_client.embeddings.create(input=[query], model=EMBED_MODEL).data[0].embedding
 hits = client.query_points(collection_name="lab19", query=q_vec, limit=5).points
 
 print(f"Query: {query!r}")
@@ -126,7 +129,7 @@ for i, h in enumerate(hits, 1):
 
 # %%
 query2 = "phương pháp tự động mở rộng hạ tầng theo lưu lượng người dùng"
-q_vec2 = next(embedder.embed([query2])).tolist()
+q_vec2 = openai_client.embeddings.create(input=[query2], model=EMBED_MODEL).data[0].embedding
 hits2 = client.query_points(collection_name="lab19", query=q_vec2, limit=5).points
 
 print(f"Query (paraphrase): {query2!r}")
@@ -148,7 +151,7 @@ for h in hits2:
 # pattern is mechanical, AI generates it perfectly. Just give it the spec
 # (batch size, payload schema) and review the diff.
 #
-# **Think hard yourself:** the choice of `BAAI/bge-small-en-v1.5`. Is it
+# **Think hard yourself:** the choice of `text-embedding-3-small`. Is it
 # right for tiếng Việt? (Hint: xem deck §1 bảng *Embedding Models 2026* —
 # `bge-m3` hỗ trợ multilingual tốt hơn nhưng nặng 4× hơn.) **Don't ask AI to
 # pick the embedding model without first telling it: language(s), corpus

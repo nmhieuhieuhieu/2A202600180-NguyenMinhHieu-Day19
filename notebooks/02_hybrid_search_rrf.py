@@ -21,7 +21,7 @@ import json
 import statistics
 from pathlib import Path
 
-from fastembed import TextEmbedding
+import openai
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 from rank_bm25 import BM25Okapi
@@ -35,25 +35,28 @@ DATA = Path(_setup.__file__).resolve().parent.parent / "data"
 docs = [json.loads(line) for line in (DATA / "corpus_vn.jsonl").open(encoding="utf-8")]
 
 # BM25
-tokenized = [(d["title"] + " " + d["text"]).lower().split() for d in docs]
+from pyvi import ViTokenizer
+tokenized = [ViTokenizer.tokenize(d["title"] + " " + d["text"]).lower().split() for d in docs]
 bm25 = BM25Okapi(tokenized)
 
 # Vector
-embedder = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+EMBED_MODEL = "text-embedding-3-small"
+openai_client = openai.OpenAI()
 client = QdrantClient(":memory:")
 client.create_collection(
     collection_name="lab19",
-    vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+    vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
 )
 BATCH = 64
 points = []
 for start in range(0, len(docs), BATCH):
     batch = docs[start:start + BATCH]
     texts = [d["title"] + " " + d["text"] for d in batch]
-    vectors = list(embedder.embed(texts))
+    response = openai_client.embeddings.create(input=texts, model=EMBED_MODEL)
+    vectors = [data.embedding for data in response.data]
     for i, (d, v) in enumerate(zip(batch, vectors)):
         points.append(PointStruct(
-            id=start + i, vector=v.tolist(),
+            id=start + i, vector=v,
             payload={"doc_id": d["doc_id"], "topic": d["topic"]},
         ))
 client.upsert(collection_name="lab19", points=points)
@@ -68,13 +71,13 @@ RRF_K = 60   # standard default — see slide §3
 
 
 def search_keyword(query: str, top_k: int = TOP_K) -> list[str]:
-    scores = bm25.get_scores(query.lower().split())
+    scores = bm25.get_scores(ViTokenizer.tokenize(query).lower().split())
     ranked = sorted(range(len(scores)), key=lambda i: -scores[i])[:top_k]
     return [docs[i]["doc_id"] for i in ranked]
 
 
 def search_semantic(query: str, top_k: int = TOP_K) -> list[str]:
-    q_vec = next(embedder.embed([query])).tolist()
+    q_vec = openai_client.embeddings.create(input=[query], model=EMBED_MODEL).data[0].embedding
     res = client.query_points(collection_name="lab19", query=q_vec, limit=top_k)
     return [p.payload["doc_id"] for p in res.points]
 
@@ -177,7 +180,7 @@ for t in ("exact", "paraphrase", "mixed"):
 #   thường ngang bằng (keyword signal đã đủ mạnh).
 # - `paraphrase` queries dùng từ Việt **không** xuất hiện verbatim trong docs
 #   → cả BM25 và vector đều giảm điểm. Trên synthetic corpus 1000-doc với
-#   embedding model `BAAI/bge-small-en-v1.5` (English-trained), semantic
+#   embedding model `text-embedding-3-small`, semantic
 #   recall trên Vietnamese paraphrases yếu (24-32%). **Đổi sang `bge-m3`
 #   (full Docker path) sẽ giúp semantic thắng paraphrase queries** — đây là
 #   teaching moment cho "embedding model choice matters".

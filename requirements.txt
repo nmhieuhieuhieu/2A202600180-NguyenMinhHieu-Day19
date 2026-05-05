@@ -8,6 +8,7 @@ fastembed>=0.4,<1.0                    # ONNX BGE-small CPU embeddings
 
 # Lexical search
 rank-bm25>=0.2.2,<1.0
+pyvi>=0.1.1
 
 # Feature store
 feast>=0.41,<1.0                       # LF AI&Data; SQLite online + file offline by default
@@ -28,3 +29,6 @@ jupytext>=1.16,<2.0
 
 # Test
 pytest>=8.3,<9.0
+
+# OpenAI
+openai>=1.0.0

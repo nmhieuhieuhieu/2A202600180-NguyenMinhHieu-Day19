@@ -14,14 +14,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from fastembed import TextEmbedding
+import functools
+import openai
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 from rank_bm25 import BM25Okapi
 
 Mode = Literal["keyword", "semantic", "hybrid"]
-EMBED_MODEL = "BAAI/bge-small-en-v1.5"   # 384-dim, CPU-friendly, multilingual works on VN
-EMBED_DIM = 384
+EMBED_MODEL = "text-embedding-3-small"
+EMBED_DIM = 1536
 COLLECTION = "lab19_corpus"
 
 
@@ -48,7 +49,7 @@ class Searcher:
         self.doc_ids: list[str] = []
         self.bm25: BM25Okapi | None = None
         self.client: QdrantClient | None = None
-        self.embedder: TextEmbedding | None = None
+        self.openai_client: openai.OpenAI | None = None
 
     @property
     def size(self) -> int:
@@ -78,7 +79,7 @@ class Searcher:
         self.bm25 = BM25Okapi(tokenized)
 
     def _build_vector_index(self) -> None:
-        self.embedder = TextEmbedding(model_name=EMBED_MODEL)
+        self.openai_client = openai.OpenAI()
 
         mode = os.getenv("QDRANT_MODE", "memory")
         if mode == "server":
@@ -96,17 +97,18 @@ class Searcher:
             vectors_config=VectorParams(size=EMBED_DIM, distance=Distance.COSINE),
         )
 
-        # Embed in batches of 64 — fastembed is CPU-bound and that batch size is sweet spot.
+        # Embed in batches of 64
         BATCH = 64
         points: list[PointStruct] = []
         for start in range(0, len(self.docs), BATCH):
             batch = self.docs[start:start + BATCH]
             texts = [d["title"] + " " + d["text"] for d in batch]
-            vectors = list(self.embedder.embed(texts))
+            response = self.openai_client.embeddings.create(input=texts, model=EMBED_MODEL)
+            vectors = [data.embedding for data in response.data]
             for i, (d, v) in enumerate(zip(batch, vectors)):
                 points.append(PointStruct(
                     id=start + i,
-                    vector=v.tolist(),
+                    vector=v,
                     payload={"doc_id": d["doc_id"], "title": d["title"], "text": d["text"]},
                 ))
         self.client.upsert(collection_name=COLLECTION, points=points)
@@ -114,7 +116,8 @@ class Searcher:
     # ── retrieval ───────────────────────────────────────────────────────
     @staticmethod
     def _tokenize(text: str) -> list[str]:
-        return text.lower().split()
+        from pyvi import ViTokenizer
+        return ViTokenizer.tokenize(text).lower().split()
 
     def search(
         self,
@@ -145,9 +148,14 @@ class Searcher:
             for i in ranked
         ]
 
+    @functools.lru_cache(maxsize=1024)
+    def _embed_query(self, query: str) -> list[float]:
+        response = self.openai_client.embeddings.create(input=[query], model=EMBED_MODEL)
+        return response.data[0].embedding
+
     def _search_semantic(self, query: str, top_k: int) -> list[SearchHit]:
-        assert self.client is not None and self.embedder is not None
-        q_vec = next(self.embedder.embed([query])).tolist()
+        assert self.client is not None and self.openai_client is not None
+        q_vec = self._embed_query(query)
         result = self.client.query_points(
             collection_name=COLLECTION,
             query=q_vec,

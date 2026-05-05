@@ -39,6 +39,8 @@ def precision_at_k(retrieved_ids: list[str], relevant_ids: set[str], k: int = TO
 
 
 def main() -> int:
+    from dotenv import load_dotenv
+    load_dotenv()
     print("Day 19 benchmark — keyword vs semantic vs hybrid")
     print("=" * 62)
 
